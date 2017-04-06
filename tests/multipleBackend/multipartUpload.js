@@ -23,13 +23,14 @@ const multipartDelete = require('../../lib/api/multipartDelete');
 const objectPutPart = require('../../lib/api/objectPutPart');
 const completeMultipartUpload =
     require('../../lib/api/completeMultipartUpload');
-const fakeUploadId = 'fakeuploadid';
+const listParts = require('../../lib/api/listParts');
 
 const awsLocation = 'aws-test';
 const awsConfig = getRealAwsConfig(awsLocation);
 const s3 = new AWS.S3(awsConfig);
 const log = new DummyRequestLogger();
 
+const fakeUploadId = 'fakeuploadid';
 const splitter = constants.splitter;
 const canonicalID = 'accessKey1';
 const authInfo = makeAuthInfo(canonicalID);
@@ -101,6 +102,12 @@ const completeParams = {
     headers: { host: `${bucketName}.s3.amazonaws.com` },
     post: completeBody,
 };
+const listRequest = {
+    bucketName,
+    namespace,
+    objectKey,
+    headers: { host: `${bucketName}.s3.amazonaws.com` },
+};
 
 const awsParams = { Bucket: awsBucket, Key: objectKey };
 
@@ -134,6 +141,57 @@ function assertMpuCompleteResults(compResult) {
             json.CompleteMultipartUploadResult.Key[0], objectKey);
         const MD = metadata.keyMaps.get(bucketName).get(objectKey);
         assert(MD);
+    });
+}
+
+function assertListResults(listResult, testName, uploadId) {
+    parseString(listResult, (err, json) => {
+        assert.equal(err, null, `Error parsing list part results: ${err}`);
+        assert.strictEqual(json.ListPartsResult.Key[0], objectKey);
+        assert.strictEqual(json.ListPartsResult.UploadId[0], uploadId);
+        assert.strictEqual(json.ListPartsResult.Initiator[0].ID[0],
+            authInfo.getCanonicalID());
+
+        if (testName === 'partNumMarker') {
+            assert.strictEqual(json.ListPartsResult.NextPartNumberMarker,
+                undefined);
+            assert.strictEqual(json.ListPartsResult.IsTruncated[0], 'false');
+            assert.strictEqual(json.ListPartsResult.Part.length, 1);
+            assert.strictEqual(json.ListPartsResult.PartNumberMarker[0], '1');
+            // data of second part put
+            assert.strictEqual(json.ListPartsResult.Part[0].PartNumber[0], '2');
+            assert.strictEqual(json.ListPartsResult.Part[0].ETag[0],
+                `"${awsETag}"`);
+            assert.strictEqual(json.ListPartsResult.Part[0].Size[0], '11');
+        } else {
+            assert.strictEqual(json.ListPartsResult.PartNumberMarker,
+                undefined);
+            assert.strictEqual(json.ListPartsResult.Part[0].PartNumber[0], '1');
+            assert.strictEqual(json.ListPartsResult.Part[0].ETag[0],
+                `"${awsETagBigObj}"`);
+            assert.strictEqual(json.ListPartsResult.Part[0].Size[0],
+                '10485760');
+
+            if (testName === 'maxParts') {
+                assert.strictEqual(json.ListPartsResult.NextPartNumberMarker[0],
+                    '1');
+                assert.strictEqual(json.ListPartsResult.IsTruncated[0], 'true');
+                assert.strictEqual(json.ListPartsResult.Part.length, 1);
+                assert.strictEqual(json.ListPartsResult.MaxParts[0], '1');
+            } else {
+                assert.strictEqual(json.ListPartsResult.NextPartNumberMarker,
+                    undefined);
+                assert.strictEqual(json.ListPartsResult.IsTruncated[0],
+                    'false');
+                assert.strictEqual(json.ListPartsResult.Part.length, 2);
+                assert.strictEqual(json.ListPartsResult.MaxParts[0], '1000');
+                assert.strictEqual(json.ListPartsResult.Part[1].PartNumber[0],
+                    '2');
+                assert.strictEqual(json.ListPartsResult.Part[1].ETag[0],
+                    `"${awsETag}"`);
+                assert.strictEqual(json.ListPartsResult.Part[1].Size[0], '11');
+            }
+        }
     });
 }
 
@@ -218,6 +276,14 @@ function putObject(putBackend, cb) {
     });
 }
 
+function abortMPU(uploadId, cb) {
+    const abortParams = Object.assign({ UploadId: uploadId }, awsParams);
+    s3.abortMultipartUpload(abortParams, err => {
+        assert.equal(err, null, `Error aborting MPU: ${err}`);
+        cb();
+    });
+}
+
 describe('Multipart Upload API with AWS Backend', function mpuTestSuite() {
     this.timeout(30000);
 
@@ -247,11 +313,58 @@ describe('Multipart Upload API with AWS Backend', function mpuTestSuite() {
         (err, result) => {
             assert.strictEqual(err, null, 'Error initiating MPU');
             assertMpuInitResults(result, uploadId => {
-                const abortParams = Object.assign(
-                    { UploadId: uploadId }, awsParams);
-                s3.abortMultipartUpload(abortParams, err => {
-                    assert.strictEqual(err, null,
-                        `Error aborting MPU ${err}`);
+                abortMPU(uploadId, done);
+            });
+        });
+    });
+
+    it('should list the parts of a multipart upload on real AWS', done => {
+        mpuSetup(awsLocation, uploadId => {
+            const listParams = Object.assign({
+                url: `/${objectKey}?uploadId=${uploadId}`,
+                query: { uploadId } }, listRequest);
+            listParts(authInfo, listParams, log, (err, result) => {
+                assert.equal(err, null, `Error listing parts on AWS: ${err}`);
+                assertListResults(result, null, uploadId);
+                abortMPU(uploadId, done);
+            });
+        });
+    });
+
+    it('should list maxParts number of parts', done => {
+        mpuSetup(awsLocation, uploadId => {
+            const listParams = Object.assign({
+                url: `/${objectKey}?uploadId=${uploadId}`,
+                query: { uploadId, 'max-parts': '1' } }, listRequest);
+            listParts(authInfo, listParams, log, (err, result) => {
+                assert.equal(err, null);
+                assertListResults(result, 'maxParts', uploadId);
+                abortMPU(uploadId, done);
+            });
+        });
+    });
+
+    it('should only list parts after PartNumberMarker', done => {
+        mpuSetup(awsLocation, uploadId => {
+            const listParams = Object.assign({
+                url: `/${objectKey}?uploadId=${uploadId}`,
+                query: { uploadId, 'part-number-marker': '1' } }, listRequest);
+            listParts(authInfo, listParams, log, (err, result) => {
+                assert.equal(err, null);
+                assertListResults(result, 'partNumMarker', uploadId);
+                abortMPU(uploadId, done);
+            });
+        });
+    });
+
+    it('should return an error on listParts of deleted MPU', done => {
+        mpuSetup(awsLocation, uploadId => {
+            abortMPU(uploadId, () => {
+                const listParams = Object.assign({
+                    url: `/${objectKey}?uploadId=${uploadId}`,
+                    query: { uploadId } }, listRequest);
+                listParts(authInfo, listParams, log, err => {
+                    assert.deepStrictEqual(err, errors.InternalError);
                     done();
                 });
             });
@@ -290,11 +403,7 @@ describe('Multipart Upload API with AWS Backend', function mpuTestSuite() {
     it('should return InternalError if MPU deleted directly from AWS ' +
     'and try to complete from S3', done => {
         mpuSetup(awsLocation, uploadId => {
-            const abortParams = Object.assign(
-                { UploadId: uploadId }, awsParams);
-            s3.abortMultipartUpload(abortParams, err => {
-                assert.equal(err, null, 'Error aborting MPU directly on ' +
-                    `AWS: ${err}`);
+            abortMPU(uploadId, () => {
                 const compParams = Object.assign({
                     url: `/${objectKey}?uploadId=${uploadId}`,
                     query: { uploadId } }, completeParams);
