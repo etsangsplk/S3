@@ -2,7 +2,7 @@ const assert = require('assert');
 const {
     WebsiteConfiguration,
     RoutingRule,
-} = require('../../../lib/metadata/WebsiteConfiguration');
+} = require('arsenal').models.websiteconfiguration;
 
 const testRoutingRuleParams = {
     redirect: {

@@ -1,7 +1,7 @@
 const assert = require('assert');
-const BucketInfo = require('../../../lib/metadata/BucketInfo');
-const { WebsiteConfiguration }
-    = require('../../../lib/metadata/WebsiteConfiguration');
+const BucketInfo = require('arsenal').models.BucketInfo;
+const { WebsiteConfiguration } =
+  require('arsenal').models.WebsiteConfiguration;
 // create variables to populate dummyBucket
 const bucketName = 'nameOfBucket';
 const owner = 'canonicalID';

@@ -1,5 +1,5 @@
 const assert = require('assert');
-const ObjectMD = require('../../../../lib/metadata/models/object/ObjectMD');
+const ObjectMD = require('arsenal').models.ObjectMD;
 
 describe('ObjectMD class setters/getters', () => {
     let md = null;
